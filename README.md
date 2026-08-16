@@ -34,6 +34,14 @@
 termux-setup-storage
 pkg update -y && pkg upgrade -y
 ```
+pkg update && pkg install proot-distro -y
+
+pkg install termux-auth
+
+proot-distro install ubuntu
+proot-distro login ubuntu
+curl -fsSL https://opencode.ai/install | bash
+opencode
 
 ### 3️⃣ 一键安装 opencode
 ```bash
@@ -60,7 +68,9 @@ opencode --version
 bash restore_opencode.sh opencode数据备份.tar.gz
 ```
 
-恢复内容：全部会话历史、技能（glm-vision / s4h）、配置、superpowers 插件。
+恢复内容：全部会话历史、技能（glm-vicurl -fsSL https://opencode.ai/install | bash
+opencode
+sion / s4h）、配置、superpowers 插件。
 
 ## ❓ 常见问题
 
