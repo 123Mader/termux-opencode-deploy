@@ -90,7 +90,15 @@ jobs:
           echo "✅ 签名配置已写入"
 
       - name: 🏗️ 构建 APK
-        run: flutter build apk --release --target-platform android-arm64
+        run: |
+          set +e
+          flutter build apk --release --target-platform android-arm64 2>&1 | tee build_apk.log
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "===== 构建失败, 关键错误: ====="
+            grep -iE "error|failed|Exception|No space|What went wrong|Caused by" build_apk.log | tail -30
+            exit $EXIT_CODE
+          fi
 
       - name: 📦 重命名 APK
         run: |
