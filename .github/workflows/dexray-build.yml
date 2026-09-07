@@ -96,9 +96,13 @@ jobs:
 
       - name: 🏗️ 构建 APK
         run: |
+          echo "===== 构建前磁盘 ====="
+          df -h / | tail -1
           set +e
           flutter build apk --release --target-platform android-arm64 2>&1 | tee build_apk.log
           EXIT_CODE=$?
+          echo "===== 构建后磁盘 ====="
+          df -h / | tail -1
           if [ $EXIT_CODE -ne 0 ]; then
             echo "===== 构建失败, 关键错误: ====="
             grep -iE "error|failed|Exception|No space|What went wrong|Caused by" build_apk.log | tail -30
