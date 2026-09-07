@@ -46,6 +46,9 @@ android {
 
     buildTypes {
         getByName("release") {
+            // DeXRay: 关闭 R8 混淆 (减少磁盘占用, 且利于逆向分析)
+            isMinifyEnabled = false
+            isShrinkResources = false
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
