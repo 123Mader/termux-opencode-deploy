@@ -42,7 +42,7 @@ jobs:
         run: |
           # 删除 APK 构建不需要的项目内目录 (不碰系统 SDK)
           rm -rf ios macos windows web linux test docx docs integration_test
-          rm -rf lib/desktop lib/web 2>/dev/null || true
+          # 注意: 不能删 lib/desktop - Android 构建引用其中的组件
           # 缩减 pub 缓存
           rm -rf ~/.pub-cache/hosted/pub.dev/*/example ~/.pub-cache/hosted/pub.dev/*/test 2>/dev/null || true
           df -h / | tail -1
