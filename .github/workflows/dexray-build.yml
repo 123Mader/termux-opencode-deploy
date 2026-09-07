@@ -41,8 +41,11 @@ jobs:
       - name: 🧹 磁盘清理 (腾出构建空间)
         run: |
           # 删除 APK 构建不需要的平台目录
-          rm -rf ios macos windows web linux
-          # 清理 pub 缓存的大包
+          rm -rf ios macos windows web linux test docx docs integration_test
+          # 删除 sdk manager 缓存 + 大 so (sherpa/onnx 语音识别 APK 用不到)
+          rm -rf /usr/local/lib/android /opt/hostedtoolcache 2>/dev/null || true
+          rm -rf lib/desktop lib/web 2>/dev/null || true
+          # 缩减 pub 缓存
           rm -rf ~/.pub-cache/hosted/pub.dev/*/example ~/.pub-cache/hosted/pub.dev/*/test 2>/dev/null || true
           df -h / | tail -1
 
@@ -89,7 +92,7 @@ jobs:
           echo "✅ 签名配置已写入"
 
       - name: 🏗️ 构建 APK
-        run: flutter build apk --release --split-per-abi
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
 
       - name: 📦 重命名 APK
         run: |
