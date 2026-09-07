@@ -49,6 +49,8 @@ android {
             // DeXRay: 关闭 R8 混淆 (减少磁盘占用, 且利于逆向分析)
             isMinifyEnabled = false
             isShrinkResources = false
+            // 默认用 debug 签名保证可安装 (生产发布请配置 release keystore)
+            signingConfig = signingConfigs.getByName("debug")
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
