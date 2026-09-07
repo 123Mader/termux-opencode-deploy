@@ -45,6 +45,9 @@ jobs:
           # 注意: 不能删 lib/desktop - Android 构建引用其中的组件
           # 只删大体积 .so 二进制 (sherpa-onnx 15MB + onnxruntime 15MB), 不动 .dart 源码
           find . \( -name "*sherpa*.so" -o -name "*onnx*.so" -o -name "*onnxruntime*.so" \) -delete 2>/dev/null || true
+          # 清理系统预装缓存腾空间 (保留 SDK!)
+          rm -rf /usr/share/dotnet /usr/local/lib/node_modules /opt/ghc /usr/local/share/powershell /usr/lib/mono 2>/dev/null || true
+          rm -rf /usr/local/lib/python* 2>/dev/null || true
           # 缩减 pub 缓存
           rm -rf ~/.pub-cache/hosted/pub.dev/*/example ~/.pub-cache/hosted/pub.dev/*/test 2>/dev/null || true
           df -h / | tail -1
