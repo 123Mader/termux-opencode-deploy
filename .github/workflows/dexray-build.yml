@@ -105,6 +105,14 @@ jobs:
           cd build/app/outputs/flutter-apk
           mv app-release.apk "DeXRay_android_${VERSION}_arm64-v8a.apk"
 
+      - name: ⬆️ 上传构建日志 (含失败时)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dexray-build-log
+          path: kelivo-src/build_apk.log
+          if-no-files-found: ignore
+
       - name: ⬆️ 上传产物
         uses: actions/upload-artifact@v4
         with:
