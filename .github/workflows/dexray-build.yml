@@ -35,6 +35,8 @@ jobs:
     steps:
       - name: 📦 检出代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 🧹 磁盘清理 (腾出构建空间)
         run: |
@@ -43,9 +45,6 @@ jobs:
           # 清理 pub 缓存的大包
           rm -rf ~/.pub-cache/hosted/pub.dev/*/example ~/.pub-cache/hosted/pub.dev/*/test 2>/dev/null || true
           df -h / | tail -1
-        working-directory: kelivo-src
-        with:
-          fetch-depth: 0
 
       - name: ☕ 配置 Java 环境
         uses: actions/setup-java@v4
