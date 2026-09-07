@@ -35,6 +35,15 @@ jobs:
     steps:
       - name: 📦 检出代码
         uses: actions/checkout@v4
+
+      - name: 🧹 磁盘清理 (腾出构建空间)
+        run: |
+          # 删除 APK 构建不需要的平台目录
+          rm -rf ios macos windows web linux
+          # 清理 pub 缓存的大包
+          rm -rf ~/.pub-cache/hosted/pub.dev/*/example ~/.pub-cache/hosted/pub.dev/*/test 2>/dev/null || true
+          df -h / | tail -1
+        working-directory: kelivo-src
         with:
           fetch-depth: 0
 
