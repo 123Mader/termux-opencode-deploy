@@ -4344,7 +4344,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get aboutPageKelivoSearchAlreadyUnlocked => '这扇门你已经推开过了。';
 
   @override
-  String get aboutPageAppName => 'Kelivo';
+  String get aboutPageAppName => 'DeXRay AI';
 
   @override
   String get aboutPageAppDescription => '开源AI 助手';
@@ -5573,7 +5573,7 @@ class AppLocalizationsZh extends AppLocalizations {
       '最大 token 数必须介于 1024 和 32768 之间。';
 
   @override
-  String get searchServiceNameKelivo => 'Kelivo';
+  String get searchServiceNameKelivo => 'DeXRay AI';
 
   @override
   String get searchServicesDialogCountryOptional => '国家/地区（可选）';
@@ -12892,7 +12892,7 @@ class AppLocalizationsZhHans extends AppLocalizationsZh {
   String get aboutPageKelivoSearchAlreadyUnlocked => '这扇门你已经推开过了。';
 
   @override
-  String get aboutPageAppName => 'Kelivo';
+  String get aboutPageAppName => 'DeXRay AI';
 
   @override
   String get aboutPageAppDescription => '开源 AI 助手';
@@ -14047,7 +14047,7 @@ class AppLocalizationsZhHans extends AppLocalizationsZh {
       '最大 token 数必须介于 1024 和 32768 之间。';
 
   @override
-  String get searchServiceNameKelivo => 'Kelivo';
+  String get searchServiceNameKelivo => 'DeXRay AI';
 
   @override
   String get searchServicesDialogCountryOptional => '国家/地区（可选）';
@@ -21364,7 +21364,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
   String get aboutPageKelivoSearchAlreadyUnlocked => '這扇門你已經推開過了。';
 
   @override
-  String get aboutPageAppName => 'Kelivo';
+  String get aboutPageAppName => 'DeXRay AI';
 
   @override
   String get aboutPageAppDescription => '開源 AI 助理';
@@ -22594,7 +22594,7 @@ class AppLocalizationsZhHant extends AppLocalizationsZh {
       '最大 token 數必須介於 1024 和 32768 之間。';
 
   @override
-  String get searchServiceNameKelivo => 'Kelivo';
+  String get searchServiceNameKelivo => 'DeXRay AI';
 
   @override
   String get searchServicesDialogCountryOptional => '國家/地區（可選）';
