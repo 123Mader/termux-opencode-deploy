@@ -8296,7 +8296,7 @@ abstract class AppLocalizations {
   /// No description provided for @aboutPageAppName.
   ///
   /// In en, this message translates to:
-  /// **'Kelivo'**
+  /// **'DeXRay AI'**
   String get aboutPageAppName;
 
   /// No description provided for @aboutPageAppDescription.
@@ -10618,7 +10618,7 @@ abstract class AppLocalizations {
   /// No description provided for @searchServiceNameKelivo.
   ///
   /// In en, this message translates to:
-  /// **'Kelivo'**
+  /// **'DeXRay AI'**
   String get searchServiceNameKelivo;
 
   /// No description provided for @searchServicesDialogCountryOptional.
