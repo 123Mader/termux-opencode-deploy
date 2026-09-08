@@ -182,7 +182,7 @@ class DioHttpClient extends http.BaseClient {
     final bodyBytes = await request.finalize().toBytes();
 
     final reqHeaders = Map<String, String>.from(request.headers);
-    reqHeaders.putIfAbsent('User-Agent', () => 'Kelivo');
+    reqHeaders.putIfAbsent('User-Agent', () => 'DeXRay AI');
 
     if (RequestLogger.enabled) {
       RequestLogger.logLine(
