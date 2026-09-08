@@ -4499,7 +4499,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'You\'ve already been through this door.';
 
   @override
-  String get aboutPageAppName => 'Kelivo';
+  String get aboutPageAppName => 'DeXRay AI';
 
   @override
   String get aboutPageAppDescription => 'Open-source AI Assistant';
@@ -5799,7 +5799,7 @@ class AppLocalizationsEn extends AppLocalizations {
       'Maximum tokens must be between 1024 and 32768.';
 
   @override
-  String get searchServiceNameKelivo => 'Kelivo';
+  String get searchServiceNameKelivo => 'DeXRay AI';
 
   @override
   String get searchServicesDialogCountryOptional => 'Country/region (optional)';
