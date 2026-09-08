@@ -107,6 +107,7 @@ final class KelivoFileUri {
   static const Set<String> _knownBundleIds = {
     'com.psyche.DeXRay',
     'psyche.kelivo',
+    'psyche.dexray',
   };
 
   /// Windows AppData folder name (Flutter BINARY_NAME). Compared
