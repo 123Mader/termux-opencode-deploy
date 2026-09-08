@@ -70,7 +70,7 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="psyche.kelivo" android:host="mcp-oauth-callback"/>
+                <data android:scheme="psyche.dexray" android:host="mcp-oauth-callback"/>
             </intent-filter>
         </activity>
         <!-- Foreground service to keep Flutter isolate alive for background generation -->
