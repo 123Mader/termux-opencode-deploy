@@ -265,7 +265,7 @@ class BrandAssets {
     ),
     BrandIconOption(
       id: 'kelivo',
-      label: 'Kelivo',
+      label: 'DeXRay AI',
       asset: 'assets/icons/kelivo.png',
     ),
     BrandIconOption(
