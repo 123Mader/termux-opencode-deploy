@@ -126,7 +126,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dexray-apk
-          path: kelivo-src/build/app/outputs/flutter-apk/DeXRay_android_*.apk
+          path: kelivo-src/build/app/outputs/flutter-apk/DeXRay_*.apk
           if-no-files-found: error
 
       - name: 🚀 发布到 Release
@@ -135,4 +135,4 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
           name: ${{ github.event.inputs.release_tag }}
-          files: kelivo-src/build/app/outputs/flutter-apk/DeXRay_android_*.apk
+          files: kelivo-src/build/app/outputs/flutter-apk/DeXRay_*.apk
