@@ -99,7 +99,7 @@ jobs:
           echo "===== 构建前磁盘 ====="
           df -h / | tail -1
           set +e
-          flutter build apk --release --target-platform android-arm64 2>&1 | tee build_apk.log
+          flutter build apk --release --target-platform android-arm64,android-arm,android-x64 2>&1 | tee build_apk.log
           EXIT_CODE=$?
           echo "===== 构建后磁盘 ====="
           df -h / | tail -1
@@ -112,7 +112,7 @@ jobs:
       - name: 📦 重命名 APK
         run: |
           cd build/app/outputs/flutter-apk
-          mv app-release.apk "DeXRay_android_${VERSION}_arm64-v8a.apk"
+          mv app-release.apk "DeXRay_AI_v1.2.6.apk"
 
       - name: ⬆️ 上传构建日志 (含失败时)
         if: ${{ always() }}
