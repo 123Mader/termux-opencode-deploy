@@ -1,0 +1,164 @@
+#!/usr/bin/env sh
+set -eu
+
+BASE_URL="${AGENTDOCK_SMOKE_URL:-http://127.0.0.1:8765}"
+TIMEOUT="${AGENTDOCK_SMOKE_TIMEOUT_SECONDS:-5}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "agentdock smoke failed: python3 is required to validate MCP JSON responses" >&2
+  exit 1
+fi
+
+export BASE_URL
+export TIMEOUT
+export AGENTDOCK_AUTH_TOKEN="${AGENTDOCK_AUTH_TOKEN:-}"
+
+python3 - <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+base_url = os.environ["BASE_URL"].rstrip("/")
+timeout = float(os.environ["TIMEOUT"])
+token = os.environ.get("AGENTDOCK_AUTH_TOKEN", "")
+attempts = int(os.environ.get("AGENTDOCK_SMOKE_ATTEMPTS", "10"))
+verify_browser = os.environ.get("AGENTDOCK_SMOKE_BROWSER", "").strip().lower() in {"1", "true", "yes"}
+
+
+def request(method, path, payload=None):
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["content-type"] = "application/json"
+    # Streamable HTTP 客户端必须同时声明可接收 JSON 和 SSE；即使当前服务返回 JSON，
+    # 官方 MCP SDK 也会在协议入口校验这两个媒体类型。
+    if path == "/mcp":
+        headers["accept"] = "application/json, text/event-stream"
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} returned HTTP {exc.code}: {body.strip()}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"{method} {path} failed: {exc.reason}") from exc
+
+
+def mcp(method, params=None, request_id=1):
+    payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        payload["params"] = params
+    _, body = request("POST", "/mcp", payload)
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"MCP {method} returned non-JSON response: {body[:200]}") from exc
+    if "error" in parsed:
+        raise RuntimeError(f"MCP {method} returned error: {parsed['error']}")
+    if "result" not in parsed:
+        raise RuntimeError(f"MCP {method} response missing result: {parsed}")
+    return parsed["result"]
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def tool_call(name, arguments, request_id):
+    envelope = mcp("tools/call", {"name": name, "arguments": arguments}, request_id=request_id)
+    # MCP 将 isError 定义为可选字段；缺省值表示成功，只有显式 true 才是工具错误。
+    require(envelope.get("isError", False) is False, f"{name} returned an error envelope: {envelope}")
+    result = envelope.get("structuredContent") or {}
+    if name.startswith("browser_"):
+        require(result.get("browser_ok") is True, f"{name} did not return browser_ok=true: {result}")
+    return result
+
+
+try:
+    print(f"==> healthz {base_url}/healthz")
+    health_body = None
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            _, health_body = request("GET", "/healthz")
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt == attempts:
+                raise
+            time.sleep(1)
+    if health_body is None:
+        raise RuntimeError(f"healthz did not respond: {last_error}")
+    health = json.loads(health_body)
+    require(health.get("ok") is True, f"healthz did not return ok=true: {health}")
+    print("healthz ok")
+
+    print("==> MCP initialize")
+    init = mcp("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "agentdock-smoke", "version": "0"}})
+    require(init.get("serverInfo", {}).get("name") == "agentdock", f"unexpected initialize result: {init}")
+    print("initialize ok")
+
+    print("==> MCP tools/list")
+    tools = mcp("tools/list", request_id=2).get("tools", [])
+    tool_names = {tool.get("name") for tool in tools if isinstance(tool, dict)}
+    require("agentdock_context" in tool_names, f"agentdock_context not exposed; tools={sorted(tool_names)}")
+    require("server_info" not in tool_names, f"server_info should not be exposed; tools={sorted(tool_names)}")
+    print(f"tools/list ok ({len(tool_names)} tools)")
+
+    print("==> MCP tools/call agentdock_context")
+    context = tool_call("agentdock_context", {}, request_id=3)
+    runtime = context.get("runtime", {})
+    require(runtime.get("version") == health.get("version"), f"runtime version does not match healthz: {context}")
+    require(runtime.get("path_model"), f"runtime path_model missing: {context}")
+    print(f"agentdock_context ok (os={runtime.get('os')}, arch={runtime.get('arch')})")
+
+    if verify_browser:
+        require("browser_session" in tool_names and "browser_snapshot" in tool_names, f"browser tools not exposed; tools={sorted(tool_names)}")
+        print("==> MCP browser smoke")
+        session = tool_call(
+            "browser_session",
+            {
+                "action": "start",
+                "headless": True,
+                "url": "data:text/html,<title>AgentDock Browser Smoke</title><main>browser-ok</main>",
+                "timeout_ms": 30000,
+            },
+            request_id=4,
+        )
+        session_id = session.get("session_id")
+        require(session_id, f"browser_session did not return session_id: {session}")
+        try:
+            snapshot = tool_call(
+                "browser_snapshot",
+                {
+                    "session_id": session_id,
+                    "max_text_chars": 2000,
+                    "max_interactive_elements": 10,
+                    "timeout_ms": 30000,
+                },
+                request_id=5,
+            )
+            require(snapshot.get("title") == "AgentDock Browser Smoke", f"unexpected browser title: {snapshot}")
+            require("browser-ok" in str(snapshot.get("text", "")), f"browser text missing: {snapshot}")
+        finally:
+            tool_call("browser_session", {"action": "close", "session_id": session_id}, request_id=6)
+        print("browser smoke ok")
+
+    print("agentdock smoke ok")
+except Exception as exc:
+    print(f"agentdock smoke failed: {exc}", file=sys.stderr)
+    if "HTTP 401" in str(exc):
+        print("hint: set AGENTDOCK_AUTH_TOKEN to the same bearer token used by the running container.", file=sys.stderr)
+    else:
+        print("hint: ensure docker compose is running and AGENTDOCK_SMOKE_URL points at the published AgentDock port.", file=sys.stderr)
+    sys.exit(1)
+PY

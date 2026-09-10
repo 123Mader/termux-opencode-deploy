@@ -1,0 +1,243 @@
+package desktopruntime
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/uvwt/agentdock/internal/fs/atomicfile"
+)
+
+const SchemaVersion = 1
+
+type Manifest struct {
+	SchemaVersion               int    `json:"schema_version"`
+	InstallRoot                 string `json:"install_root,omitempty"`
+	AgentDockBinary             string `json:"agentdock_binary"`
+	TrayBinary                  string `json:"tray_binary,omitempty"`
+	AgentDockLauncher           string `json:"agentdock_launcher,omitempty"`
+	AgentDockTaskName           string `json:"agentdock_task_name,omitempty"`
+	PrivilegeMode               string `json:"privilege_mode,omitempty"`
+	CloudflaredBinary           string `json:"cloudflared_binary,omitempty"`
+	CloudflaredLauncher         string `json:"cloudflared_launcher,omitempty"`
+	StartupValueName            string `json:"startup_value_name,omitempty"`
+	TrayStartupValueName        string `json:"tray_startup_value_name,omitempty"`
+	CloudflaredStartupValueName string `json:"cloudflared_startup_value_name,omitempty"`
+	Host                        string `json:"host"`
+	Port                        int    `json:"port"`
+	LocalMCPURL                 string `json:"local_mcp_url"`
+	TunnelMode                  string `json:"tunnel_mode"`
+	PublicURL                   string `json:"public_url,omitempty"`
+	InstallChannel              string `json:"install_channel"`
+}
+
+func PathForBinary(binaryPath string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(binaryPath)), "runtime.json")
+}
+
+func Load(path string) (Manifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("parse Windows runtime manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return Manifest{}, err
+	}
+	runtimeRoot, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("resolve Windows runtime root: %w", err)
+	}
+	manifest.resolveRuntimePaths(runtimeRoot)
+	return manifest, nil
+}
+
+func Save(path string, manifest Manifest) error {
+	if err := manifest.Validate(); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode Windows runtime manifest: %w", err)
+	}
+	data = append(data, '\n')
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("write Windows runtime manifest: %w", err)
+	}
+	return nil
+}
+
+func LoadForBinary(binaryPath string) (Manifest, error) {
+	manifest, err := Load(PathForBinary(binaryPath))
+	if err != nil {
+		return Manifest{}, err
+	}
+	if !samePath(manifest.AgentDockBinary, binaryPath) {
+		return Manifest{}, errors.New("Windows runtime manifest belongs to another AgentDock binary")
+	}
+	return manifest, nil
+}
+
+// resolveRuntimePaths 以 runtime.json 的实际目录作为当前安装根。
+// Windows 打包应用可能重定向文件写入，却保留安装时记录的旧绝对路径；
+// 因此所有由 AgentDock 管理的安装路径都必须先按真实根目录收敛。
+func (manifest *Manifest) resolveRuntimePaths(runtimeRoot string) {
+	runtimeRoot = filepath.Clean(runtimeRoot)
+	recordedRoot := strings.TrimSpace(manifest.InstallRoot)
+	manifest.InstallRoot = runtimeRoot
+	manifest.AgentDockBinary = resolveRuntimeManagedFile(
+		recordedRoot,
+		runtimeRoot,
+		manifest.AgentDockBinary,
+		filepath.Join(runtimeRoot, "bin", "agentdock.exe"),
+		true,
+	)
+	manifest.TrayBinary = resolveRuntimeManagedFile(
+		recordedRoot,
+		runtimeRoot,
+		manifest.TrayBinary,
+		filepath.Join(runtimeRoot, "bin", "agentdock-tray.exe"),
+		false,
+	)
+	manifest.AgentDockLauncher = resolveRuntimeManagedFile(
+		recordedRoot,
+		runtimeRoot,
+		manifest.AgentDockLauncher,
+		filepath.Join(runtimeRoot, "start-agentdock.ps1"),
+		false,
+	)
+	manifest.CloudflaredBinary = resolveRuntimeManagedFile(
+		recordedRoot,
+		runtimeRoot,
+		manifest.CloudflaredBinary,
+		filepath.Join(runtimeRoot, "bin", "cloudflared.exe"),
+		false,
+	)
+	manifest.CloudflaredLauncher = resolveRuntimeManagedFile(
+		recordedRoot,
+		runtimeRoot,
+		manifest.CloudflaredLauncher,
+		filepath.Join(runtimeRoot, "start-cloudflared.ps1"),
+		false,
+	)
+}
+
+func resolveRuntimeManagedFile(recordedRoot, runtimeRoot, recordedPath, fallbackPath string, required bool) string {
+	recordedPath = strings.TrimSpace(recordedPath)
+	if recordedPath == "" {
+		if required || regularFileExists(fallbackPath) {
+			return filepath.Clean(fallbackPath)
+		}
+		return ""
+	}
+
+	candidate := recordedPath
+	managedPath := pathWithinRoot(runtimeRoot, recordedPath)
+	if recordedRoot != "" && filepath.IsAbs(recordedRoot) && pathWithinRoot(recordedRoot, recordedPath) {
+		managedPath = true
+		if !samePath(recordedRoot, runtimeRoot) {
+			relative, err := filepath.Rel(recordedRoot, recordedPath)
+			if err == nil {
+				candidate = filepath.Join(runtimeRoot, relative)
+			}
+		}
+	}
+
+	if regularFileExists(candidate) {
+		return filepath.Clean(candidate)
+	}
+	if managedPath && regularFileExists(fallbackPath) {
+		return filepath.Clean(fallbackPath)
+	}
+	return filepath.Clean(candidate)
+}
+
+func pathWithinRoot(root, path string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" || !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return false
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || relative == ".." {
+		return false
+	}
+	return !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func regularFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func (manifest Manifest) Validate() error {
+	if manifest.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("unsupported Windows runtime manifest schema: %d", manifest.SchemaVersion)
+	}
+	if strings.TrimSpace(manifest.AgentDockBinary) == "" || !filepath.IsAbs(manifest.AgentDockBinary) {
+		return errors.New("Windows runtime manifest requires an absolute agentdock_binary")
+	}
+	if manifest.PrivilegeMode != "" && manifest.PrivilegeMode != "standard" && manifest.PrivilegeMode != "elevated" {
+		return fmt.Errorf("unsupported Windows privilege mode: %s", manifest.PrivilegeMode)
+	}
+	if manifest.PrivilegeMode == "elevated" && strings.TrimSpace(manifest.AgentDockTaskName) == "" {
+		return errors.New("elevated Windows runtime requires agentdock_task_name")
+	}
+	if manifest.Port < 1 || manifest.Port > 65535 {
+		return errors.New("Windows runtime manifest port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(manifest.Host) == "" {
+		return errors.New("Windows runtime manifest host is required")
+	}
+	if err := validateHTTPURL(manifest.LocalMCPURL, false); err != nil {
+		return fmt.Errorf("invalid local_mcp_url: %w", err)
+	}
+	if manifest.TunnelMode != "none" && manifest.TunnelMode != "quick" && manifest.TunnelMode != "named" {
+		return fmt.Errorf("unsupported Windows tunnel mode: %s", manifest.TunnelMode)
+	}
+	if manifest.TunnelMode == "none" && strings.TrimSpace(manifest.PublicURL) != "" {
+		return errors.New("public_url must be empty when tunnel_mode is none")
+	}
+	if manifest.TunnelMode != "none" {
+		if err := validateHTTPURL(manifest.PublicURL, true); err != nil {
+			return fmt.Errorf("invalid public_url: %w", err)
+		}
+	}
+	return nil
+}
+
+func (manifest Manifest) UsesScheduledTask() bool {
+	return manifest.PrivilegeMode == "elevated" && strings.TrimSpace(manifest.AgentDockTaskName) != ""
+}
+
+func (manifest Manifest) HealthURL() string {
+	return fmt.Sprintf("http://%s:%d/healthz", manifest.Host, manifest.Port)
+}
+
+func validateHTTPURL(raw string, requireHTTPS bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return err
+	}
+	if parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return errors.New("URL must contain only a valid HTTP origin and path")
+	}
+	if requireHTTPS && parsed.Scheme != "https" {
+		return errors.New("URL must use https")
+	}
+	if !requireHTTPS && parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("URL must use http or https")
+	}
+	return nil
+}
+
+func samePath(left, right string) bool {
+	left = strings.TrimRight(filepath.Clean(left), `\/`)
+	right = strings.TrimRight(filepath.Clean(right), `\/`)
+	return strings.EqualFold(left, right)
+}

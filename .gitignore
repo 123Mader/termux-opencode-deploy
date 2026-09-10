@@ -1,0 +1,18 @@
+# Android / Gradle
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/assets/agentdock/*/
+android/app/src/main/assets/agentdock/agentdock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Logs
+*.log
+
+# Go build output
+go/bin/

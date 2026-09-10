@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AgentDock</string>
+    <string name="mcp_url" translatable="false">http://127.0.0.1:8765/mcp</string>
+</resources>

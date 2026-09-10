@@ -1,0 +1,627 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os/exec"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/uvwt/agentdock/internal/textutil"
+)
+
+type PreparationStatus struct {
+	Enabled  bool
+	Mode     string
+	Policy   string
+	Warnings []string
+}
+
+type PrepareFunc func(*exec.Cmd) (func(), PreparationStatus)
+
+type CommandFactory func(context.Context) *exec.Cmd
+
+type ExecutionContext struct {
+	Runtime      string
+	Distribution string
+	Workdir      string
+}
+
+type Session struct {
+	ID         string
+	Command    *exec.Cmd
+	Cancel     context.CancelFunc
+	Stdin      io.WriteCloser
+	StartedAt  time.Time
+	FinishedAt time.Time
+	Done       chan struct{}
+	TimedOut   bool
+	Terminal   string
+	execution  ExecutionContext
+
+	runner   commandRunner
+	killOnce sync.Once
+	killErr  error
+
+	mu                 sync.Mutex
+	completed          bool
+	exitCode           int
+	waitErr            error
+	stdout             bytes.Buffer
+	stderr             bytes.Buffer
+	stdoutTotalBytes   int
+	stderrTotalBytes   int
+	stdoutDroppedBytes int
+	stderrDroppedBytes int
+	stdoutCursor       int
+	stderrCursor       int
+}
+
+type Snapshot struct {
+	SessionID          string
+	Status             string
+	Stdout             string
+	Stderr             string
+	ElapsedMS          int64
+	TimedOut           bool
+	Terminal           string
+	StdoutOutputBytes  int
+	StderrOutputBytes  int
+	StdoutTotalBytes   int
+	StderrTotalBytes   int
+	StdoutDroppedBytes int
+	StderrDroppedBytes int
+	StdoutOmittedBytes int
+	StderrOmittedBytes int
+	StdoutOutputLines  int
+	StderrOutputLines  int
+	StdoutTruncated    bool
+	StderrTruncated    bool
+	Completed          bool
+	ExitCode           int
+	CommandOK          bool
+	Runtime            string
+	WSLDistribution    string
+	Workdir            string
+}
+
+type Store struct {
+	mu              sync.Mutex
+	sessions        map[string]*Session
+	reserved        int
+	starting        int
+	closing         bool
+	startsDrained   chan struct{}
+	reservedDrained chan struct{}
+}
+
+type Summary struct {
+	ID           string `json:"id"`
+	Status       string `json:"status"`
+	ElapsedMS    int64  `json:"elapsed_ms"`
+	TimedOut     bool   `json:"timed_out"`
+	Runtime      string `json:"runtime,omitempty"`
+	Distribution string `json:"wsl_distribution,omitempty"`
+	Workdir      string `json:"workdir,omitempty"`
+}
+
+func NewStore() *Store {
+	startsDrained := make(chan struct{})
+	reservedDrained := make(chan struct{})
+	close(startsDrained)
+	close(reservedDrained)
+	return &Store{
+		sessions:        map[string]*Session{},
+		startsDrained:   startsDrained,
+		reservedDrained: reservedDrained,
+	}
+}
+
+func (s *Store) TryReserve(maxRunning int) bool {
+	if maxRunning <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	running := s.reserved
+	for _, session := range s.sessions {
+		if !session.Completed() {
+			running++
+		}
+	}
+	if running >= maxRunning {
+		return false
+	}
+	if s.reserved == 0 {
+		s.reservedDrained = make(chan struct{})
+	}
+	if s.starting == 0 {
+		s.startsDrained = make(chan struct{})
+	}
+	s.reserved++
+	s.starting++
+	return true
+}
+
+// FinishStart 标记命令已经离开不可安全抢占的启动窗口。
+// 调用方必须在 runner、进程控制器和取消监听都建立完成后调用。
+func (s *Store) FinishStart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.starting == 0 {
+		return
+	}
+	s.starting--
+	if s.starting == 0 {
+		close(s.startsDrained)
+	}
+}
+
+func (s *Store) BeginClose() {
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+}
+
+func (s *Store) Closing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closing
+}
+
+func (s *Store) StartingCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.starting
+}
+
+func (s *Store) WaitForStarts(ctx context.Context) bool {
+	s.mu.Lock()
+	if s.starting == 0 {
+		s.mu.Unlock()
+		return true
+	}
+	drained := s.startsDrained
+	s.mu.Unlock()
+	select {
+	case <-drained:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Store) ReleaseReservation() {
+	s.mu.Lock()
+	s.releaseReservationLocked()
+	s.mu.Unlock()
+}
+
+func (s *Store) ReservationCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reserved
+}
+
+func (s *Store) WaitForReservations(ctx context.Context) bool {
+	s.mu.Lock()
+	if s.reserved == 0 {
+		s.mu.Unlock()
+		return true
+	}
+	drained := s.reservedDrained
+	s.mu.Unlock()
+	select {
+	case <-drained:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (s *Store) AddReserved(session *Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseReservationLocked()
+	s.sessions[session.ID] = session
+}
+
+func (s *Store) releaseReservationLocked() {
+	if s.reserved == 0 {
+		return
+	}
+	s.reserved--
+	if s.reserved == 0 {
+		close(s.reservedDrained)
+	}
+}
+
+func (s *Store) Add(session *Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[session.ID] = session
+}
+
+func (s *Store) Get(id string) (*Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[id]
+	return session, ok
+}
+
+func (s *Store) Delete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, id)
+}
+
+func (s *Store) List() []*Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Session, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		out = append(out, session)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].StartedAt.Equal(out[j].StartedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
+}
+
+func (s *Store) PruneCompletedBefore(cutoff time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for id, session := range s.sessions {
+		if session.CompletedBefore(cutoff) {
+			delete(s.sessions, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+func (s *Store) PruneCompletedToLimit(limit int) int {
+	if limit < 0 {
+		limit = 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.sessions) <= limit {
+		return 0
+	}
+	type completedSession struct {
+		session  *Session
+		finished time.Time
+	}
+	completed := make([]completedSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		if finished, ok := session.completionTime(); ok {
+			completed = append(completed, completedSession{session: session, finished: finished})
+		}
+	}
+	sort.Slice(completed, func(i, j int) bool {
+		if completed[i].finished.Equal(completed[j].finished) {
+			return completed[i].session.ID < completed[j].session.ID
+		}
+		return completed[i].finished.Before(completed[j].finished)
+	})
+	removed := 0
+	for _, item := range completed {
+		if len(s.sessions) <= limit {
+			break
+		}
+		delete(s.sessions, item.session.ID)
+		removed++
+	}
+	return removed
+}
+
+func (s *Session) Summary() Summary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	status := "running"
+	finishedAt := time.Now()
+	if s.completed {
+		status = "exited"
+		finishedAt = s.FinishedAt
+		if s.TimedOut {
+			status = "timeout"
+		}
+	}
+	return Summary{
+		ID:           s.ID,
+		Status:       status,
+		ElapsedMS:    finishedAt.Sub(s.StartedAt).Milliseconds(),
+		TimedOut:     s.TimedOut,
+		Runtime:      s.execution.Runtime,
+		Distribution: s.execution.Distribution,
+		Workdir:      s.execution.Workdir,
+	}
+}
+
+func (s *Session) completionTime() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.FinishedAt, s.completed
+}
+
+func (s *Session) Completed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completed
+}
+
+func (s *Session) CompletedBefore(cutoff time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.completed && !s.FinishedAt.IsZero() && s.FinishedAt.Before(cutoff)
+}
+
+func Start(ctx context.Context, command, workdir string, env []string, timeout time.Duration, prepare PrepareFunc) (*Session, PreparationStatus, error) {
+	return StartWithTTY(ctx, command, workdir, env, timeout, false, prepare)
+}
+
+func StartWithTTY(ctx context.Context, command, workdir string, env []string, timeout time.Duration, tty bool, prepare PrepareFunc) (*Session, PreparationStatus, error) {
+	return StartCommandWithTTY(ctx, func(cmdCtx context.Context) *exec.Cmd {
+		cmd := shellCommand(cmdCtx, command)
+		cmd.Dir = workdir
+		cmd.Env = env
+		return cmd
+	}, timeout, tty, prepare)
+}
+
+func StartCommandWithTTY(ctx context.Context, build CommandFactory, timeout time.Duration, tty bool, prepare PrepareFunc) (*Session, PreparationStatus, error) {
+	if timeout <= 0 {
+		return nil, PreparationStatus{}, fmt.Errorf("timeout must be positive")
+	}
+	if build == nil {
+		return nil, PreparationStatus{}, fmt.Errorf("command factory is required")
+	}
+	id, err := newID()
+	if err != nil {
+		return nil, PreparationStatus{}, fmt.Errorf("generate session id: %w", err)
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+	cmd := build(cmdCtx)
+	if cmd == nil {
+		cancel()
+		return nil, PreparationStatus{}, fmt.Errorf("command factory returned nil command")
+	}
+	cleanup := func() {}
+	status := PreparationStatus{}
+	if prepare != nil {
+		cleanup, status = prepare(cmd)
+		if cleanup == nil {
+			cleanup = func() {}
+		}
+	}
+
+	s := &Session{
+		ID: id, Command: cmd, Cancel: cancel,
+		StartedAt: time.Now(), Done: make(chan struct{}), exitCode: -1,
+		Terminal: "pipes",
+	}
+	stdout := sessionOutputWriter{session: s}
+	stderr := sessionOutputWriter{session: s, stderr: true}
+
+	var runner commandRunner
+	usedInteractive := false
+	if tty {
+		runner, usedInteractive, err = startInteractiveRunner(cmdCtx, cmd, stdout, stderr)
+	}
+	if err == nil && !usedInteractive {
+		runner, err = startStandardRunner(cmd, stdout, stderr)
+	}
+	if err != nil {
+		cancel()
+		cleanup()
+		return nil, status, err
+	}
+	if usedInteractive {
+		s.Terminal = "conpty"
+	}
+	s.runner = runner
+	s.Stdin = runner.Stdin()
+	cleanup()
+
+	// 运行期取消统一交给 runner：标准 runner 关闭了 os/exec 的直接子进程 Cancel，
+	// 避免它与进程组 / Job Object 的整棵进程树终止并发竞争。
+	go func() {
+		select {
+		case <-cmdCtx.Done():
+			_, _ = s.Kill()
+		case <-s.Done:
+		}
+	}()
+
+	go func() {
+		exitCode, waitErr := runner.Wait()
+		s.mu.Lock()
+		s.waitErr = waitErr
+		s.completed = true
+		s.FinishedAt = time.Now()
+		s.exitCode = exitCode
+		if cmdCtx.Err() == context.DeadlineExceeded {
+			s.TimedOut = true
+		}
+		s.mu.Unlock()
+		close(s.Done)
+	}()
+	return s, status, nil
+}
+
+func (s *Session) SetExecutionContext(execution ExecutionContext) {
+	s.mu.Lock()
+	s.execution = execution
+	s.mu.Unlock()
+}
+
+func (s *Session) Write(text string) error {
+	_, err := io.WriteString(s.Stdin, text)
+	return err
+}
+
+func (s *Session) CloseStdin() error { return s.Stdin.Close() }
+
+func (s *Session) WaitError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitErr
+}
+
+func (s *Session) Kill() (bool, error) {
+	s.mu.Lock()
+	if s.completed {
+		s.mu.Unlock()
+		return false, nil
+	}
+	runner := s.runner
+	s.mu.Unlock()
+	if runner == nil {
+		return false, nil
+	}
+	s.killOnce.Do(func() {
+		s.killErr = runner.Kill()
+		s.Cancel()
+	})
+	return true, s.killErr
+}
+
+func (s *Session) Snapshot(status string, maxBytes int) Snapshot {
+	return s.snapshot(status, maxBytes, true)
+}
+
+// Peek returns the current unread output without advancing the observation cursors.
+// Mutation tools use it so a following status call still receives the output.
+func (s *Session) Peek(status string, maxBytes int) Snapshot {
+	return s.snapshot(status, maxBytes, false)
+}
+
+func (s *Session) snapshot(status string, maxBytes int, advance bool) Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stdoutFull := s.stdout.String()
+	stderrFull := s.stderr.String()
+	stdoutSegment := stdoutFull
+	stderrSegment := stderrFull
+	if s.stdoutCursor > 0 && s.stdoutCursor <= len(stdoutFull) {
+		stdoutSegment = stdoutFull[s.stdoutCursor:]
+	}
+	if s.stderrCursor > 0 && s.stderrCursor <= len(stderrFull) {
+		stderrSegment = stderrFull[s.stderrCursor:]
+	}
+	if advance {
+		s.stdoutCursor = len(stdoutFull)
+		s.stderrCursor = len(stderrFull)
+	}
+	stdout := trim(stdoutSegment, maxBytes)
+	stderr := trim(stderrSegment, maxBytes)
+	return Snapshot{
+		SessionID: s.ID, Status: status, Stdout: stdout, Stderr: stderr,
+		ElapsedMS: time.Since(s.StartedAt).Milliseconds(), TimedOut: s.TimedOut, Terminal: s.Terminal,
+		StdoutOutputBytes: len([]byte(stdout)), StderrOutputBytes: len([]byte(stderr)),
+		StdoutTotalBytes: s.stdoutTotalBytes, StderrTotalBytes: s.stderrTotalBytes,
+		StdoutDroppedBytes: s.stdoutDroppedBytes, StderrDroppedBytes: s.stderrDroppedBytes,
+		StdoutOmittedBytes: omittedBytes(stdoutSegment, maxBytes), StderrOmittedBytes: omittedBytes(stderrSegment, maxBytes),
+		StdoutOutputLines: countLines(stdout), StderrOutputLines: countLines(stderr),
+		StdoutTruncated: maxBytes > 0 && len([]byte(stdoutSegment)) > maxBytes,
+		StderrTruncated: maxBytes > 0 && len([]byte(stderrSegment)) > maxBytes,
+		Completed:       s.completed, ExitCode: s.exitCode, CommandOK: s.exitCode == 0 && !s.TimedOut,
+		Runtime: s.execution.Runtime, WSLDistribution: s.execution.Distribution, Workdir: s.execution.Workdir,
+	}
+}
+
+type sessionOutputWriter struct {
+	session *Session
+	stderr  bool
+}
+
+func (w sessionOutputWriter) Write(data []byte) (int, error) {
+	s := w.session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dst := &s.stdout
+	if w.stderr {
+		dst = &s.stderr
+	}
+	n, err := dst.Write(data)
+	if w.stderr {
+		s.stderrTotalBytes += n
+		dropped := trimBuffer(dst, 4*1024*1024)
+		s.stderrDroppedBytes += dropped
+		s.stderrCursor = adjustCursorAfterDrop(s.stderrCursor, dropped)
+	} else {
+		s.stdoutTotalBytes += n
+		dropped := trimBuffer(dst, 4*1024*1024)
+		s.stdoutDroppedBytes += dropped
+		s.stdoutCursor = adjustCursorAfterDrop(s.stdoutCursor, dropped)
+	}
+	return n, err
+}
+
+func trim(value string, maxBytes int) string {
+	return textutil.SafeTruncateString(value, maxBytes).Text
+}
+
+func omittedBytes(value string, maxBytes int) int {
+	if maxBytes <= 0 || len([]byte(value)) <= maxBytes {
+		return 0
+	}
+	return len([]byte(value)) - len([]byte(trim(value, maxBytes)))
+}
+
+func countLines(value string) int {
+	if value == "" {
+		return 0
+	}
+	count := strings.Count(value, "\n")
+	if !strings.HasSuffix(value, "\n") {
+		count++
+	}
+	return count
+}
+
+func trimBuffer(buf *bytes.Buffer, limit int) int {
+	if limit <= 0 || buf.Len() <= limit {
+		return 0
+	}
+	data := buf.Bytes()
+	dropped := len(data) - limit
+	kept := append([]byte(nil), data[dropped:]...)
+	buf.Reset()
+	_, _ = buf.Write(kept)
+	return dropped
+}
+
+func adjustCursorAfterDrop(cursor, dropped int) int {
+	if dropped <= 0 {
+		return cursor
+	}
+	if cursor <= dropped {
+		return 0
+	}
+	return cursor - dropped
+}
+
+func newID() (string, error) {
+	raw := make([]byte, 12)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "session-" + hex.EncodeToString(raw), nil
+}
