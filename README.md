@@ -3,9 +3,12 @@
 将 [uvwt/agentdock](https://github.com/uvwt/agentdock)（Go 编写的 MCP 服务器，
 v0.8.3，MCP Streamable HTTP 协议）转换打包为 Android 应用（APK）。
 
-核心（Go）静态交叉编译为 Android ELF（arm64-v8a / x86_64），由一个极简的
+核心（Go）静态交叉编译为 Android arm64 ELF（arm64-v8a），由一个极简的
 Kotlin 前台服务进程在手机上运行，MCP 服务固定在 `http://127.0.0.1:8765/mcp`，
 可按任意 MCP 客户端（如 DeXRay_AI、Claude Desktop、通用 MCP 客户端）连接。
+
+> 说明：`android/arm64` 纯 Go 静态交叉编译（无需 NDK）；而 `android/arm`、
+> `android/amd64` 需要 cgo 外部链接，本仓暂未启用，当前仅产出 arm64-v8a APK。
 
 ## 目录结构
 

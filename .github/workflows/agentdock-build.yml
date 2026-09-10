@@ -36,15 +36,14 @@ jobs:
           commit="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
           build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           ldflags="-s -w -X github.com/uvwt/agentdock/internal/buildinfo.Commit=$commit -X github.com/uvwt/agentdock/internal/buildinfo.BuildDate=$build_date"
-          for spec in "arm64-v8a arm64" "x86_64 amd64"; do
-            abi="${spec% *}"
-            arch="${spec#* }"
-            out="../$AGENTDOCK_ASSET_BASE/$abi/agentdock"
-            mkdir -p "$(dirname "$out")"
-            echo "Building $abi (GOARCH=$arch) -> $out"
-            CGO_ENABLED=0 GOOS=android GOARCH=$arch go build -trimpath -ldflags="$ldflags" -o "$out" ./cmd/agentdock
-          done
-          ls -la "../$AGENTDOCK_ASSET_BASE"/*/agentdock
+          # 说明：android/arm64 支持内部链接，纯 Go 静态构建；
+          # android/arm、android/amd64 需要 cgo 外部链接（需 NDK），暂不构建。
+          abi=arm64-v8a
+          out="../$AGENTDOCK_ASSET_BASE/$abi/agentdock"
+          mkdir -p "$(dirname "$out")"
+          echo "Building $abi (GOARCH=arm64) -> $out"
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o "$out" ./cmd/agentdock
+          ls -la "../$AGENTDOCK_ASSET_BASE/$abi/agentdock"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
