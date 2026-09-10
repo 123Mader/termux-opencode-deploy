@@ -399,6 +399,14 @@ class McpProvider extends ChangeNotifier {
       await _persistServers(next);
       _servers = next;
     }
+    // Ensure built-in WebReverse MCP (web/JS/WASM reverse-engineering) server
+    // is present by default
+    final webreverse = _builtinWebReversemcpServerIfMissing();
+    if (webreverse != null) {
+      final next = <McpServerConfig>[..._servers, webreverse];
+      await _persistServers(next);
+      _servers = next;
+    }
     // initialize statuses
     for (final s in _servers) {
       _connections.putIfAbsent(s.id, _ServerConnection.new);
@@ -445,6 +453,27 @@ class McpProvider extends ChangeNotifier {
       name: 'DeXRay AI',
       transport: McpTransportType.http,
       url: 'http://127.0.0.1:8791/mcp',
+      tools: const <McpToolConfig>[], // will refresh on connect
+    );
+  }
+
+  /// Ensure built-in WebReverse MCP (web/JS/WASM reverse-engineering) MCP
+  /// server is present. Points at the WebReverse MCP App
+  /// (http://127.0.0.1:4242/mcp).
+  McpServerConfig? _builtinWebReversemcpServerIfMissing() {
+    final exists = _servers.any(
+      (s) =>
+          s.name == 'WebReverse MCP' ||
+          s.id == 'webreverse_mcp' ||
+          s.id == 'webreverse',
+    );
+    if (exists) return null;
+    return McpServerConfig(
+      id: 'webreverse_mcp',
+      enabled: true,
+      name: 'WebReverse MCP',
+      transport: McpTransportType.http,
+      url: 'http://127.0.0.1:4242/mcp',
       tools: const <McpToolConfig>[], // will refresh on connect
     );
   }
